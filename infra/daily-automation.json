@@ -1,0 +1,122 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "type": "string" },
+    "automationAccountName": { "type": "string", "defaultValue": "aa-synthetic-zt-logs" },
+    "dcrName": { "type": "string" },
+    "workspaceResourceId": { "type": "string" },
+    "actionGroupResourceId": { "type": "string", "defaultValue": "" }
+  },
+  "variables": {
+    "accountId": "[resourceId('Microsoft.Automation/automationAccounts', parameters('automationAccountName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Automation/automationAccounts",
+      "apiVersion": "2024-10-23",
+      "name": "[parameters('automationAccountName')]",
+      "location": "[parameters('location')]",
+      "identity": { "type": "SystemAssigned" },
+      "tags": { "purpose": "synthetic-zero-trust-logs" },
+      "properties": {
+        "sku": { "name": "Basic" },
+        "disableLocalAuth": true,
+        "publicNetworkAccess": true
+      }
+    },
+    {
+      "type": "Microsoft.Automation/automationAccounts/runtimeEnvironments",
+      "apiVersion": "2024-10-23",
+      "name": "[format('{0}/PowerShell74', parameters('automationAccountName'))]",
+      "location": "[parameters('location')]",
+      "dependsOn": ["[variables('accountId')]"],
+      "properties": {
+        "description": "PowerShell 7.4; runbook uses built-in HTTP and managed identity, no extra modules.",
+        "runtime": { "language": "PowerShell", "version": "7.4" },
+        "defaultPackages": {}
+      }
+    },
+    {
+      "type": "Microsoft.Automation/automationAccounts/runbooks",
+      "apiVersion": "2024-10-23",
+      "name": "[format('{0}/Send-DailyZeroTrustLogs', parameters('automationAccountName'))]",
+      "location": "[parameters('location')]",
+      "dependsOn": ["[resourceId('Microsoft.Automation/automationAccounts/runtimeEnvironments', parameters('automationAccountName'), 'PowerShell74')]"],
+      "properties": {
+        "description": "Generate ten fresh randomized events per Zero Trust pillar and send directly through the DCR.",
+        "runbookType": "PowerShell",
+        "runtimeEnvironment": "PowerShell74",
+        "logProgress": false,
+        "logVerbose": false,
+        "draft": {}
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName')), variables('accountId'), 'daily-publisher')]",
+      "scope": "[format('Microsoft.Insights/dataCollectionRules/{0}', parameters('dcrName'))]",
+      "dependsOn": ["[variables('accountId')]"],
+      "properties": {
+        "principalId": "[reference(variables('accountId'), '2024-10-23', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')]"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "name": "synthetic-daily-jobs",
+      "scope": "[format('Microsoft.Automation/automationAccounts/{0}', parameters('automationAccountName'))]",
+      "dependsOn": ["[variables('accountId')]"],
+      "properties": {
+        "workspaceId": "[parameters('workspaceResourceId')]",
+        "logs": [
+          { "category": "JobLogs", "enabled": true },
+          { "category": "JobStreams", "enabled": true }
+        ],
+        "metrics": []
+      }
+    },
+    {
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "[format('{0}-failed-jobs', parameters('automationAccountName'))]",
+      "location": "global",
+      "dependsOn": ["[variables('accountId')]"],
+      "properties": {
+        "description": "A synthetic log job failed or was suspended/stopped. Inspect job streams. A rerun sends fresh events to all six tables.",
+        "severity": 2,
+        "enabled": true,
+        "scopes": ["[variables('accountId')]"],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT15M",
+        "autoMitigate": true,
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "FailedDailyJob",
+              "metricNamespace": "Microsoft.Automation/automationAccounts",
+              "metricName": "TotalJob",
+              "operator": "GreaterThan",
+              "threshold": 0,
+              "timeAggregation": "Total",
+              "dimensions": [
+                { "name": "Runbook", "operator": "Include", "values": ["Send-DailyZeroTrustLogs"] },
+                { "name": "Status", "operator": "Include", "values": ["Failed", "Suspended", "Stopped"] }
+              ],
+              "criterionType": "StaticThresholdCriterion"
+            }
+          ]
+        },
+        "actions": "[if(empty(parameters('actionGroupResourceId')), json('[]'), createArray(createObject('actionGroupId', parameters('actionGroupResourceId'))))]"
+      }
+    }
+  ],
+  "outputs": {
+    "automationAccountId": { "type": "string", "value": "[variables('accountId')]" },
+    "principalId": { "type": "string", "value": "[reference(variables('accountId'), '2024-10-23', 'Full').identity.principalId]" }
+  }
+}

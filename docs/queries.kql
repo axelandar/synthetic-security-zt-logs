@@ -1,0 +1,53 @@
+// Counts across all six pillars in the last 24 hours.
+union SyntheticDcrZeroTrust*
+| where TimeGenerated > ago(24h) and IsSynthetic == true
+| summarize Records=count() by Pillar, Decision
+| order by Pillar asc, Decision asc
+
+// Daily counts in America/New_York. Manual generator events are included.
+union SyntheticDcrZeroTrust*
+| where TimeGenerated > ago(7d) and IsSynthetic == true
+| extend LocalDay = startofday(datetime_utc_to_local(TimeGenerated, "America/New_York"))
+| summarize Records=count(), UniqueEvents=dcount(EventId) by LocalDay, Pillar
+| order by LocalDay desc, Pillar asc
+
+// Missing/underfilled pillars today. Run after the 09:00 schedule plus an ingestion grace period.
+let expected = datatable(Pillar:string)
+  ["Identity", "Devices", "Applications", "Data", "Infrastructure", "Networks"];
+let localDate = startofday(datetime_utc_to_local(now(), "America/New_York"));
+let actual =
+  union SyntheticDcrZeroTrust*
+  | where TimeGenerated > ago(2d) and IsSynthetic == true
+  | where startofday(datetime_utc_to_local(TimeGenerated, "America/New_York")) == localDate
+  | summarize Records=count() by Pillar;
+expected
+| join kind=leftouter actual on Pillar
+| project Pillar, Records=coalesce(Records, 0)
+| where Records < 10
+
+// Blocked and remediation-required decisions.
+union SyntheticDcrZeroTrust*
+| where TimeGenerated > ago(24h) and IsSynthetic == true and Decision != "Allow"
+| project TimeGenerated, Pillar, Decision, RiskLevel, RiskScore,
+          UserPrincipalName, DeviceName, Control, AccessReason
+| order by TimeGenerated desc
+
+// Duplicate identifiers. Exact duplicates should not occur within a scheduled batch.
+union withsource=SourceTable SyntheticDcrZeroTrust*
+| where TimeGenerated > ago(7d) and IsSynthetic == true
+| summarize Copies=count() by SourceTable, EventId
+| where Copies > 1
+
+// Verify a batch's EventIds. Replace with all ten IDs from the job's BATCH receipt.
+let ids = dynamic(["<event-id-1>", "<event-id-2>"]);
+SyntheticDcrZeroTrustIdentity_CL
+| where TimeGenerated > ago(7d)
+| where EventId in (ids)
+| summarize Copies=count() by EventId
+
+// Automation failed jobs, after diagnostic settings have begun delivering.
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| where ResourceProvider == "MICROSOFT.AUTOMATION" and Category == "JobLogs"
+| where ResultType in ("Failed", "Suspended", "Stopped")
+| order by TimeGenerated desc

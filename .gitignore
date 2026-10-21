@@ -1,0 +1,7 @@
+.local/
+dist/
+TestResults*.xml
+*.context.json
+*.local.json
+.DS_Store
+Thumbs.db

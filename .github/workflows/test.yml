@@ -1,0 +1,18 @@
+name: PowerShell tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test runner
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 4.10.1 -Scope CurrentUser -Force -SkipPublisherCheck
+      - name: Test generator, direct daily delivery, and deployment packaging
+        shell: pwsh
+        run: .\scripts\Test.ps1
